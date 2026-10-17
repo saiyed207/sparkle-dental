@@ -2,20 +2,17 @@ const express = require('express');
 const mongoose = require('mongoose');
 const router = express.Router();
 
-// Retrieve the Booking Model
-const Booking = mongoose.models.Booking;
-
-// API Route to Fetch Bookings
 router.get('/api/bookings', async (req, res) => {
     try {
+        await req.connectToDatabase(); // Ensure DB is connected
+        const Booking = mongoose.models.Booking;
         const bookings = await Booking.find().sort({ createdAt: -1 });
         res.json(bookings);
     } catch (error) {
-        res.status(500).json({ error: 'Failed to fetch bookings' });
+        res.status(500).json({ error: error.message });
     }
 });
 
-// Serve Admin Dashboard UI
 router.get('/', (req, res) => {
     res.send(`
         <!DOCTYPE html>
@@ -62,6 +59,11 @@ router.get('/', (req, res) => {
                         const response = await fetch('/admin/api/bookings');
                         const bookings = await response.json();
                         
+                        if(bookings.error) {
+                            tbody.innerHTML = \`<tr><td colspan="6" style="color:red; text-align:center;">Database Error: \${bookings.error}</td></tr>\`;
+                            return;
+                        }
+
                         tbody.innerHTML = '';
                         if(bookings.length === 0) {
                             tbody.innerHTML = '<tr><td colspan="6" style="text-align: center;">No bookings yet.</td></tr>';
