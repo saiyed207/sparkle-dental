@@ -6,15 +6,29 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// MongoDB Connection
-const MONGODB_URI = process.env.MONGODB_URI;
-if (MONGODB_URI) {
-    mongoose.connect(MONGODB_URI)
-        .then(() => console.log('Connected to MongoDB'))
-        .catch(err => console.error('MongoDB connection error:', err));
-} else {
-    console.warn("MONGODB_URI environment variable is missing.");
+// --- VERCEL OPTIMIZED DATABASE CONNECTION ---
+let cachedDb = null;
+
+async function connectToDatabase() {
+    if (cachedDb) {
+        return cachedDb; // Use existing connection
+    }
+    if (!process.env.MONGODB_URI) {
+        throw new Error("MONGODB_URI environment variable is missing in Vercel!");
+    }
+    // Connect to MongoDB
+    const db = await mongoose.connect(process.env.MONGODB_URI, {
+        serverSelectionTimeoutMS: 5000 // 5 second timeout
+    });
+    cachedDb = db;
+    return db;
 }
+
+// Pass the connection function to other routes
+app.use((req, res, next) => {
+    req.connectToDatabase = connectToDatabase;
+    next();
+});
 
 // Define Booking Schema
 const bookingSchema = new mongoose.Schema({
@@ -26,7 +40,6 @@ const bookingSchema = new mongoose.Schema({
     status: { type: String, default: 'Pending' }
 }, { timestamps: true });
 
-// Prevent Mongoose from recompiling the model upon Vercel Serverless cold starts
 const Booking = mongoose.models.Booking || mongoose.model('Booking', bookingSchema);
 
 // Mount Admin Routes
@@ -35,16 +48,31 @@ app.use('/admin', adminRoutes);
 // API Route to submit a booking
 app.post('/api/book', async (req, res) => {
     try {
+        await connectToDatabase(); // Ensure DB is connected before saving
         const newBooking = new Booking(req.body);
         await newBooking.save();
         res.status(201).json({ success: true, message: 'Booking successfully confirmed!' });
     } catch (error) {
-        res.status(500).json({ success: false, message: 'Server error. Please try again.' });
+        console.error("Booking Error:", error);
+        // This will send the EXACT error to the browser so we can see it
+        res.status(500).json({ success: false, message: `DB Error: ${error.message}` });
     }
 });
 
 // Serve Client UI
-app.get('/', (req, res) => {
+app.get('/', async (req, res) => {
+    try {
+        await connectToDatabase(); // Check connection on page load
+    } catch (error) {
+        return res.status(500).send(`
+            <div style="font-family: sans-serif; padding: 40px; text-align: center;">
+                <h2 style="color: red;">Database Connection Failed</h2>
+                <p><b>Exact Error:</b> ${error.message}</p>
+                <p>Please verify your MONGODB_URI in Vercel Settings.</p>
+            </div>
+        `);
+    }
+
     res.send(`
         <!DOCTYPE html>
         <html lang="en">
@@ -89,10 +117,9 @@ app.get('/', (req, res) => {
                 <div class="info-section">
                     <div class="clinic-info">
                         <h3>About Our Clinic</h3>
-                        <p>📍 <b>Address:</b> Milan Building, 189, Perin Nariman St, near Paras Guest House, Borabazar Precinct, Fort, Mumbai 400001</p>
+                        <p>📍 <b>Address:</b> Milan Building, 189, Perin Nariman St, near Paras Guest House, Fort, Mumbai 400001</p>
                         <p>📞 <b>Phone:</b> +91 98693 41311</p>
                         <p>⭐ <b>Rating:</b> <span class="rating">4.9 ★</span> (831 reviews)</p>
-                        <p>⏰ <b>Hours:</b> Opens 10 AM Saturday</p>
                     </div>
                 </div>
 
@@ -146,11 +173,11 @@ app.get('/', (req, res) => {
                             e.target.reset();
                         } else {
                             msgDiv.style.color = 'red';
-                            msgDiv.innerText = 'Failed to book. Try again.';
+                            msgDiv.innerText = result.message; // Prints EXACT db error!
                         }
                     } catch(err) {
                         msgDiv.style.color = 'red';
-                        msgDiv.innerText = 'Server error. Try again later.';
+                        msgDiv.innerText = 'Network error. Check your connection.';
                     }
                     btn.innerText = 'Confirm Appointment';
                 });
@@ -160,11 +187,4 @@ app.get('/', (req, res) => {
     `);
 });
 
-// Support for running locally
-if (require.main === module) {
-    const PORT = process.env.PORT || 3000;
-    app.listen(PORT, () => console.log(\`Server running locally on port \${PORT}\`));
-}
-
-// Export for Vercel
 module.exports = app;
